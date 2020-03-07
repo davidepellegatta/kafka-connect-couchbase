@@ -20,6 +20,7 @@ import com.couchbase.client.core.env.NetworkResolution;
 import com.couchbase.client.core.logging.CouchbaseLoggerFactory;
 import com.couchbase.client.core.logging.RedactionLevel;
 import com.couchbase.client.core.time.Delay;
+import com.couchbase.client.dcp.config.ClientEnvironment;
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.PersistTo;
@@ -42,6 +43,9 @@ import com.couchbase.connect.kafka.util.JsonBinaryDocument;
 import com.couchbase.connect.kafka.util.JsonBinaryTranscoder;
 import com.couchbase.connect.kafka.util.Version;
 import com.couchbase.connect.kafka.util.config.DurationParser;
+import com.couchbase.connect.kafka.util.config.NodeAndPortParser;
+import com.couchbase.connect.kafka.util.config.NodeAndPortParser.NodeAndPort;
+import com.couchbase.connect.kafka.util.config.NodeAndPortParser.SinkPortsConfig;
 import com.couchbase.connect.kafka.util.config.Password;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -125,8 +129,8 @@ public class CouchbaseSinkTask extends SinkTask {
     }
 
     setForceIpv4(config.getBoolean(FORCE_IPV4_CONFIG));
-
     RedactionLevel redactionLevel = config.getEnum(RedactionLevel.class, CouchbaseSourceConnectorConfig.LOG_REDACTION_CONFIG);
+
     CouchbaseLoggerFactory.setRedactionLevel(redactionLevel);
 
     List<String> clusterAddress = config.getList(CouchbaseSourceConnectorConfig.CONNECTION_CLUSTER_ADDRESS_CONFIG);
@@ -137,6 +141,8 @@ public class CouchbaseSinkTask extends SinkTask {
     String password = Password.CONNECTION.get(config);
 
     boolean sslEnabled = config.getBoolean(CouchbaseSourceConnectorConfig.CONNECTION_SSL_ENABLED_CONFIG);
+    SinkPortsConfig sinkPortsConfig = NodeAndPortParser.provideSink(clusterAddress, sslEnabled);
+
     String sslKeystoreLocation = config.getString(CouchbaseSourceConnectorConfig.CONNECTION_SSL_KEYSTORE_LOCATION_CONFIG);
     String sslKeystorePassword = Password.SSL_KEYSTORE.get(config);
     Long connectTimeout = config.getLong(CouchbaseSourceConnectorConfig.CONNECTION_TIMEOUT_MS_CONFIG);
@@ -146,8 +152,11 @@ public class CouchbaseSinkTask extends SinkTask {
         .sslKeystoreFile(sslKeystoreLocation)
         .sslKeystorePassword(sslKeystorePassword)
         .connectTimeout(connectTimeout)
+        .bootstrapHttpEnabled(sinkPortsConfig.httpBootstrapEnabled)
+        .bootstrapHttpDirectPort(sinkPortsConfig.httpBootstrapPort)
         .build();
-    cluster = CouchbaseCluster.create(env, clusterAddress);
+
+    cluster = CouchbaseCluster.create(env, sinkPortsConfig.hostName);
     cluster.authenticate(username, password);
 
     List<Transcoder<? extends Document, ?>> transcoders =

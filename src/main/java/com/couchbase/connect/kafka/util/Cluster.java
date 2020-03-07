@@ -48,18 +48,22 @@ import com.couchbase.client.deps.io.netty.handler.codec.http.HttpVersion;
 import com.couchbase.client.deps.io.netty.handler.ssl.SslHandler;
 import com.couchbase.client.deps.io.netty.util.CharsetUtil;
 import com.couchbase.connect.kafka.CouchbaseSourceConnectorConfig;
+import com.couchbase.connect.kafka.util.config.NodeAndPortParser;
 import com.couchbase.connect.kafka.util.config.Password;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.security.KeyStore;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.couchbase.connect.kafka.util.config.NodeAndPortParser.NodeAndPort;
 import static com.couchbase.client.core.logging.RedactableArgument.system;
 
 public class Cluster {
+
   static final ConfigParserEnvironment dummyBootstrapEnv = new ConfigParserEnvironment() {
     @Override
     public MemcachedHashingStrategy memcachedHashingStrategy() {
@@ -70,11 +74,13 @@ public class Cluster {
 
   public static Config fetchBucketConfig(final CouchbaseSourceConnectorConfig config) {
     final List<String> nodes = config.getList(CouchbaseSourceConnectorConfig.CONNECTION_CLUSTER_ADDRESS_CONFIG);
+
     final String bucket = config.getString(CouchbaseSourceConnectorConfig.CONNECTION_BUCKET_CONFIG);
     final String username = config.getUsername();
     final String password = Password.CONNECTION.get(config);
     final boolean sslEnabled = config.getBoolean(CouchbaseSourceConnectorConfig.CONNECTION_SSL_ENABLED_CONFIG);
-    final int port = sslEnabled ? ClientEnvironment.BOOTSTRAP_HTTP_SSL_PORT : ClientEnvironment.BOOTSTRAP_HTTP_DIRECT_PORT;
+    final List<NodeAndPort> nodesAndPorts = NodeAndPortParser.provideSource(nodes, sslEnabled);
+
     final SSLEngineFactory sslEngineFactory =
         new SSLEngineFactory(new SecureEnvironment() {
           @Override
@@ -101,7 +107,7 @@ public class Cluster {
     final AtomicReference<CouchbaseBucketConfig> result = new AtomicReference<>(null);
     NioEventLoopGroup group = new NioEventLoopGroup();
     try {
-      for (final String hostname : nodes) {
+      for (final NodeAndPort nodeAndPort : nodesAndPorts) {
         try {
           final CountDownLatch latch = new CountDownLatch(1);
           Bootstrap bootstrap = new Bootstrap();
@@ -122,8 +128,8 @@ public class Cluster {
                         protected void channelRead0(ChannelHandlerContext ctx, FullHttpResponse msg) throws Exception {
                           try {
                             if (msg.getStatus().equals(HttpResponseStatus.OK)) {
-                              String body = msg.content().toString(CharsetUtil.UTF_8).replace("$HOST", hostname);
-                              result.set((CouchbaseBucketConfig) BucketConfigParser.parse(body, dummyBootstrapEnv, hostname));
+                              String body = msg.content().toString(CharsetUtil.UTF_8).replace("$HOST", nodeAndPort.hostName);
+                              result.set((CouchbaseBucketConfig) BucketConfigParser.parse(body, dummyBootstrapEnv, nodeAndPort.hostName));
                             }
                           } finally {
                             latch.countDown();
@@ -133,11 +139,10 @@ public class Cluster {
                 }
               });
 
-
-          Channel channel = bootstrap.connect(hostname, port).sync().channel();
+          Channel channel = bootstrap.connect(nodeAndPort.hostName, nodeAndPort.port).sync().channel();
           HttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET,
               "/pools/default/b/" + bucket);
-          request.headers().set(HttpHeaders.Names.HOST, hostname);
+          request.headers().set(HttpHeaders.Names.HOST, nodeAndPort.hostName);
           request.headers().set(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.CLOSE);
 
           ByteBuf raw = Unpooled.buffer(bucket.length() + password.length() + 1);
@@ -155,7 +160,7 @@ public class Cluster {
             return new Config(bucketConfig);
           }
         } catch (Exception e) {
-          LOGGER.warn("Ignoring error for node {} when getting number of partitions", system(hostname), e);
+          LOGGER.warn("Ignoring error for node {} when getting number of partitions", system(nodeAndPort.hostName), e);
         }
       }
     } finally {
